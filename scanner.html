@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nexrise Mobile Scanner</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui;background:#071029;color:#e6eef8;min-height:100vh}
+main{max-width:620px;margin:auto;padding:16px}.card{background:#0f1724;border:1px solid #263247;border-radius:16px;padding:16px}
+h1{font-size:22px}video{width:100%;aspect-ratio:4/3;object-fit:cover;background:#000;border-radius:12px}
+button,input{width:100%;min-height:46px;margin-top:10px;border-radius:10px;border:1px solid #334155;padding:10px;font-size:16px}
+button{background:#7c3aed;color:#fff;border:0;font-weight:700}.secondary{background:#162033}
+.status{margin-top:12px;padding:12px;border-radius:10px;background:#111c2e}
+</style></head><body><main><div class="card">
+<h1>📱 Nexrise Mobile Scanner</h1>
+<p>Scan a barcode/QR code and send it to the PC billing session.</p>
+<video id="video" autoplay playsinline></video>
+<button id="start">Start Camera</button><button id="stop" class="secondary">Stop</button>
+<input id="manual" placeholder="Enter barcode manually">
+<button id="send" class="secondary">Send Manual Code</button>
+<div class="status" id="status">Ready.</div>
+</div></main>
+<script>
+const video=document.getElementById('video'),status=document.getElementById('status');
+let stream=null,busy=false,last='';
+const bc='BroadcastChannel' in window?new BroadcastChannel('nexrise-pos-scans'):null;
+function beep(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C)return;const a=new C,o=a.createOscillator(),g=a.createGain();o.frequency.value=880;g.gain.value=.08;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+.12)}catch{}}
+function send(code){
+ code=String(code||'').trim();if(!code)return;
+ if(bc)bc.postMessage({type:'scan',code});
+ try{localStorage.setItem('nexrise_scan',JSON.stringify({code,t:Date.now()}));}catch{}
+ status.textContent='Sent: '+code;beep();
+}
+async function start(){
+ if(!('BarcodeDetector' in window)){status.textContent='BarcodeDetector is unavailable. Use Chrome over HTTPS or use manual entry.';return}
+ try{
+  const detector=new BarcodeDetector({formats:['qr_code','code_128','ean_13','ean_8','upc_a','upc_e']});
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
+  video.srcObject=stream;busy=true;status.textContent='Scanning...';
+  async function loop(){if(!busy)return;try{const d=await detector.detect(video);if(d.length&&d[0].rawValue&&d[0].rawValue!==last){last=d[0].rawValue;send(last);setTimeout(()=>last='',900)}}catch{}requestAnimationFrame(loop)}loop();
+ }catch(e){status.textContent='Camera error: '+e.message}
+}
+function stop(){busy=false;if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;video.srcObject=null;status.textContent='Stopped.'}
+start.onclick=start;stop.onclick=stop;send.onclick=()=>send(document.getElementById('manual').value);
+</script></body></html>
