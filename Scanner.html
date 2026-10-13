@@ -1,0 +1,294 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Student Attendance Scanner</title>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 18px;
+      background: #eef3f9;
+      font-family: Arial, sans-serif;
+      color: #172033;
+    }
+
+    .card {
+      max-width: 480px;
+      margin: 20px auto;
+      padding: 22px;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 5px 22px #0001;
+    }
+
+    h1 { font-size: 24px; }
+
+    button, input {
+      width: 100%;
+      padding: 14px;
+      margin-top: 12px;
+      border-radius: 9px;
+      font-size: 16px;
+    }
+
+    button {
+      border: none;
+      background: #1769e0;
+      color: white;
+      font-weight: bold;
+    }
+
+    button:disabled { opacity: .6; }
+
+    input {
+      border: 1px solid #cbd5e1;
+    }
+
+    #scanner { width: 100%; margin-top: 16px; }
+    #main { display: none; }
+
+    #popup {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: #101828cc;
+    }
+
+    .popup-card {
+      max-width: 420px;
+      width: 100%;
+      padding: 24px;
+      border-radius: 16px;
+      background: white;
+    }
+
+    #status {
+      margin-top: 16px;
+      padding: 12px;
+      background: #f1f5f9;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+
+    .error { color: #b91c1c; }
+  </style>
+</head>
+
+<body>
+
+  <!-- FIRST: Camera permission popup -->
+  <section id="popup">
+    <div class="popup-card">
+      <h1>📷 Camera Permission</h1>
+      <p>
+        Allow camera access to scan student barcodes and record
+        attendance in your Google Sheet.
+      </p>
+      <p>Tap Continue, then select Allow if Chrome asks.</p>
+
+      <button id="startButton" onclick="startScanner()">
+        Continue and Open Scanner
+      </button>
+
+      <p id="popupError" class="error"></p>
+    </div>
+  </section>
+
+  <!-- SECOND: Main scanner -->
+  <main id="main" class="card">
+    <h1>Student Attendance</h1>
+    <p>Point your camera at a student barcode.</p>
+
+    <div id="scanner"></div>
+
+    <p><b>Manual barcode entry</b></p>
+    <input id="barcode" placeholder="Enter barcode number"
+           autocomplete="off">
+    <button onclick="submitManual()">Submit Barcode</button>
+
+    <button onclick="stopScanner()" style="background:#475569">
+      Stop Camera
+    </button>
+
+    <div id="status" role="status" aria-live="polite">
+      Waiting for camera.
+    </div>
+  </main>
+
+  <script>
+    // Your existing Google Apps Script web app URL.
+    const SCRIPT_URL =
+      "https://script.google.com/macros/s/AKfycbxRnWXtxmtXWbs-_30sO9089VfF9aki49uTjCkcWwoo_2xrMDNCXggMKqIKGviprybqXA/exec";
+
+    let qrScanner = null;
+    let busy = false;
+    let lastValue = "";
+    let lastTime = 0;
+
+    function setStatus(message, error = false) {
+      const el = document.getElementById("status");
+      el.textContent = message;
+      el.className = error ? "error" : "";
+    }
+
+    async function startScanner() {
+      const button = document.getElementById("startButton");
+      const popupError = document.getElementById("popupError");
+
+      button.disabled = true;
+      button.textContent = "Opening camera…";
+      popupError.textContent = "";
+
+      try {
+        if (!window.isSecureContext ||
+            !navigator.mediaDevices ||
+            !navigator.mediaDevices.getUserMedia) {
+          throw new Error(
+            "Camera requires a secure HTTPS page. Open the published GitHub Pages URL."
+          );
+        }
+
+        // Explicitly request permission following the button tap.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false
+        });
+
+        // Release this test stream; the scanner library opens its camera.
+        stream.getTracks().forEach(track => track.stop());
+
+        document.getElementById("popup").style.display = "none";
+        document.getElementById("main").style.display = "block";
+
+        qrScanner = new Html5Qrcode("scanner");
+
+        await qrScanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 150 },
+            formatsToSupport: [
+              Html5QrcodeSupportedFormats.EAN_13,
+              Html5QrcodeSupportedFormats.EAN_8,
+              Html5QrcodeSupportedFormats.UPC_A,
+              Html5QrcodeSupportedFormats.UPC_E,
+              Html5QrcodeSupportedFormats.CODE_128,
+              Html5QrcodeSupportedFormats.CODE_39,
+              Html5QrcodeSupportedFormats.QR_CODE
+            ]
+          },
+          onBarcode,
+          () => {}
+        );
+
+        setStatus("Camera ready. Scan a barcode.");
+
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "Try Again";
+
+        popupError.textContent =
+          "Camera error: " + (error.name || "Error") +
+          ". " + (error.message || String(error)) +
+          " Check Chrome and Android camera permissions.";
+      }
+    }
+
+    async function onBarcode(decodedText) {
+      const value = String(decodedText || "").trim();
+      const now = Date.now();
+
+      if (!value || busy ||
+          (value === lastValue && now - lastTime < 3000)) return;
+
+      lastValue = value;
+      lastTime = now;
+      await sendBarcode(value);
+    }
+
+    function submitManual() {
+      const value = document.getElementById("barcode").value.trim();
+      if (!value) {
+        setStatus("Enter a barcode first.", true);
+        return;
+      }
+      sendBarcode(value);
+    }
+
+    async function sendBarcode(value) {
+      if (busy) return;
+      busy = true;
+      setStatus("Saving barcode: " + value);
+
+      try {
+        /*
+         * A cross-origin POST using text/plain avoids a CORS preflight.
+         * The Apps Script backend must support doPost(e) and return JSON.
+         */
+        const response = await fetch(SCRIPT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ barcode: value }),
+          redirect: "follow"
+        });
+
+        if (!response.ok) {
+          throw new Error("Server returned HTTP " + response.status);
+        }
+
+        const result = await response.json();
+
+        if (!result.success) {
+          throw new Error(result.error || "Attendance was not saved.");
+        }
+
+        setStatus(
+          (result.recognized ? "Recognized: " : "Unknown barcode: ") +
+          (result.studentName || "Student") + " | " + value
+        );
+        document.getElementById("barcode").value = "";
+
+      } catch (error) {
+        setStatus(
+          "Could not confirm attendance was saved. " +
+          error.message +
+          " Your Apps Script backend may need a doPost(e) handler and " +
+          "cross-origin response support.",
+          true
+        );
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function stopScanner() {
+      if (qrScanner) {
+        try {
+          await qrScanner.stop();
+          qrScanner.clear();
+        } catch (error) {
+          // Scanner may already be stopped.
+        }
+        qrScanner = null;
+      }
+      setStatus("Camera stopped. Tap Continue to start again.");
+      document.getElementById("main").style.display = "none";
+      document.getElementById("popup").style.display = "flex";
+      document.getElementById("startButton").disabled = false;
+      document.getElementById("startButton").textContent = "Continue and Open Scanner";
+    }
+  </script>
+
+</body>
+</html>
