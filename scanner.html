@@ -3,32 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fast Student Attendance Scanner</title>
+<title>Fast Student Barcode Scanner</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-
 <style>
 *{box-sizing:border-box}
 body{margin:0;padding:12px;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033}
 main{max-width:520px;margin:auto;background:white;padding:16px;border-radius:14px}
 h1{text-align:center;font-size:23px}
+#reader{width:100%;margin:12px auto}
 button,input{width:100%;padding:13px;margin-top:10px;font-size:16px;border-radius:9px}
 button{border:0;background:#155eef;color:white;font-weight:bold}
 .stop{background:#475569}
-#reader{width:100%;margin:12px auto}
-#status{padding:13px;background:#edf2f7;border-radius:9px;margin-top:14px;overflow-wrap:anywhere;white-space:pre-wrap}
-#status.good{background:#dcfce7;color:#166534}
-#status.bad{background:#fee2e2;color:#991b1b}
-.small{font-size:13px;color:#64748b}
+#status{padding:13px;background:#edf2f7;border-radius:9px;margin-top:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.good{background:#dcfce7!important;color:#166534}
+.bad{background:#fee2e2!important;color:#991b1b}
 </style>
 </head>
 <body>
 <main>
 <h1>Fast Attendance Scanner</h1>
-
 <div id="reader"></div>
-
-<button id="startBtn" onclick="startScanner()">Start Scanner</button>
-<button class="stop" onclick="stopScanner()">Stop Scanner</button>
+<button onclick="startScanner()">Start Camera</button>
+<button class="stop" onclick="stopScanner()">Stop Camera</button>
 
 <form id="manualForm">
 <input id="barcodeInput" placeholder="Enter barcode manually" autocomplete="off" required>
@@ -36,7 +32,6 @@ button{border:0;background:#155eef;color:white;font-weight:bold}
 </form>
 
 <div id="status" role="status" aria-live="polite">Ready to scan.</div>
-<p class="small">Keep this page open during attendance. Camera access requires HTTPS.</p>
 </main>
 
 <script>
@@ -48,14 +43,14 @@ const SCRIPT_URL =
 const statusBox = document.getElementById("status");
 const barcodeInput = document.getElementById("barcodeInput");
 
-let scanner = null;
+let scanner;
 let running = false;
-let pending = false;
 let lastBarcode = "";
 let lastTime = 0;
 let callbackCounter = 0;
+const recentlyScanned = new Map();
 
-function status(message, type = "") {
+function showStatus(message, type = "") {
   statusBox.textContent = message;
   statusBox.className = type;
 }
@@ -64,47 +59,41 @@ async function startScanner() {
   if (running) return;
 
   if (typeof Html5Qrcode === "undefined") {
-    status("Scanner library failed to load. Check your internet connection.", "bad");
+    showStatus("Scanner library failed to load. Check internet.", "bad");
     return;
   }
 
   try {
-    scanner = new Html5Qrcode("reader", {
-      verbose: false
-    });
+    scanner = new Html5Qrcode("reader", { verbose: false });
 
     await scanner.start(
       { facingMode: "environment" },
       {
-        fps: 20,
-        qrbox: function(width, height) {
-          return {
-            width: Math.min(280, Math.floor(width * 0.85)),
-            height: Math.min(120, Math.floor(height * 0.35))
-          };
-        },
-        aspectRatio: 1.777,
+        fps: 25,
+        qrbox: (width, height) => ({
+          width: Math.min(320, Math.floor(width * 0.9)),
+          height: Math.min(140, Math.floor(height * 0.4))
+        }),
         disableFlip: true,
-        rememberLastUsedCamera: true,
         formatsToSupport: [
-          Html5QrcodeSupportedFormats.QR_CODE,
           Html5QrcodeSupportedFormats.EAN_13,
           Html5QrcodeSupportedFormats.EAN_8,
           Html5QrcodeSupportedFormats.CODE_128,
           Html5QrcodeSupportedFormats.CODE_39,
           Html5QrcodeSupportedFormats.UPC_A,
           Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.ITF
+          Html5QrcodeSupportedFormats.ITF,
+          Html5QrcodeSupportedFormats.QR_CODE
         ]
       },
-      decoded => submitBarcode(decoded),
+      barcode => submitBarcode(barcode),
       () => {}
     );
 
     running = true;
-    status("Camera ready. Scan the next student barcode.");
-  } catch (err) {
-    status("Could not start camera: " + err, "bad");
+    showStatus("Camera ready. Scan the next barcode.");
+  } catch (error) {
+    showStatus("Camera error: " + error, "bad");
   }
 }
 
@@ -114,9 +103,9 @@ async function stopScanner() {
   try {
     await scanner.stop();
     running = false;
-    status("Scanner stopped.");
-  } catch (err) {
-    status("Could not stop scanner: " + err, "bad");
+    showStatus("Camera stopped.");
+  } catch (error) {
+    showStatus("Stop error: " + error, "bad");
   }
 }
 
@@ -125,38 +114,48 @@ document.getElementById("manualForm").addEventListener("submit", event => {
   submitBarcode(barcodeInput.value);
 });
 
-function submitBarcode(value) {
-  const barcode = String(value || "").trim();
+function submitBarcode(raw) {
+  const barcode = String(raw || "").trim();
   if (!barcode) return;
 
   const now = Date.now();
 
-  // Ignore duplicate camera detections for a short period.
-  if (barcode === lastBarcode && now - lastTime < 1800) return;
+  // Suppress repeat camera detections of the same barcode.
+  if (barcode === lastBarcode && now - lastTime < 1200) return;
 
-  // Only one attendance write at a time.
-  if (pending) return;
+  // Suppress repeated scans of a student during the same session.
+  if (recentlyScanned.has(barcode)) {
+    lastBarcode = barcode;
+    lastTime = now;
+    showStatus("Already scanned: " + barcode);
+    return;
+  }
 
   lastBarcode = barcode;
   lastTime = now;
-  pending = true;
+  recentlyScanned.set(barcode, now);
 
-  status("Saving: " + barcode);
+  // Show immediate feedback without waiting for the server.
+  showStatus("Barcode detected: " + barcode + "\nSaving attendance…");
 
-  const callback = "att_cb_" + Date.now() + "_" + (++callbackCounter);
+  sendToServer(barcode);
+}
+
+function sendToServer(barcode) {
+  const callback = "attendance_cb_" + Date.now() + "_" + (++callbackCounter);
   const script = document.createElement("script");
   let finished = false;
 
   const timeoutId = setTimeout(() => {
     finish();
-    status("Timed out. Check Apps Script deployment and internet connection.", "bad");
+    recentlyScanned.delete(barcode);
+    showStatus("Save timed out. Please retry barcode: " + barcode, "bad");
   }, 15000);
 
   function finish() {
     if (finished) return;
     finished = true;
     clearTimeout(timeoutId);
-    pending = false;
     script.remove();
     delete window[callback];
   }
@@ -165,19 +164,19 @@ function submitBarcode(value) {
     finish();
 
     if (!data || !data.success) {
-      status("Save failed: " + (data?.message || "Invalid backend response"), "bad");
+      recentlyScanned.delete(barcode);
+      showStatus("Save failed: " + (data?.message || "No valid response"), "bad");
       return;
     }
 
     if (data.recognized) {
-      status(
-        "✓ PRESENT\n" +
-        data.studentName + "\n" +
-        "Barcode: " + data.barcode,
+      showStatus(
+        "✓ PRESENT\n" + data.studentName + "\nBarcode: " + data.barcode,
         "good"
       );
     } else {
-      status("UNKNOWN BARCODE\n" + data.barcode + "\nScan logged as No.", "bad");
+      recentlyScanned.delete(barcode);
+      showStatus("UNKNOWN BARCODE\n" + data.barcode, "bad");
     }
 
     barcodeInput.value = "";
@@ -185,7 +184,8 @@ function submitBarcode(value) {
 
   script.onerror = () => {
     finish();
-    status("Could not contact Apps Script. Check the /exec URL and access settings.", "bad");
+    recentlyScanned.delete(barcode);
+    showStatus("Cannot contact Apps Script. Check internet and deployment URL.", "bad");
   };
 
   const url = new URL(SCRIPT_URL);
